@@ -1,4 +1,4 @@
-Nagios-MKLivestatus version 0.10
+Nagios-MKLivestatus version 0.11
 ==============================
 
     Nagios::MKLivestatus can be used to access the data of the check_mk
@@ -18,7 +18,7 @@ DEPENDENCIES
     This module requires no other modules.
 
 SYNOPSIS
-    my $nl = Nagios::MKLivestatus->new({ socket => '/var/lib/nagios3/rw/livestatus.sock' });$
+    my $nl = Nagios::MKLivestatus->new( socket => '/var/lib/nagios3/rw/livestatus.sock' );
     my $hosts = $nl->selectall_arrayref("GET hosts");
 
 AUTHOR
@@ -30,4 +30,3 @@ COPYRIGHT AND LICENCE
 
     This library is free software; you can redistribute it and/or modify
     it under the same terms as Perl itself.
-
