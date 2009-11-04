@@ -1,0 +1,7 @@
+Changes
+lib/Nagios/MKLivestatus.pm
+Makefile.PL
+MANIFEST
+README
+t/Nagios-MKLivestatus.t
+META.yml                                 Module meta-data (added by MakeMaker)
