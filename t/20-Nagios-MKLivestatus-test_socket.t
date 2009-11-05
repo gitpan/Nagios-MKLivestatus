@@ -3,8 +3,17 @@
 #########################
 
 use strict;
-use Test::More tests => 6;
-use threads;
+use Test::More;
+
+BEGIN {
+  eval {require threads;};
+  if ( $@ ) {
+    plan skip_all => 'need threads support for testing a real socket'
+  }else{
+    plan tests => 5
+  }
+}
+
 use File::Temp;
 BEGIN { use_ok('Nagios::MKLivestatus') };
 
@@ -17,26 +26,21 @@ my $test_host_result_hash = [ { 'c' => 'f', 'a' => 'd', 'b' => 'e' }, { 'c' => '
 
 #########################
 # get a temp file from File::Temp and replace it with our socket
-my $fh = File::Temp->new();
+my $fh = File::Temp->new(UNLINK => 0);
 my $socket_path = $fh->filename;
 unlink($socket_path);
 my $thr = threads->create('create_socket');
 sleep(1);
 
 #########################
-# create object with single arg
-my $nl = Nagios::MKLivestatus->new( $socket_path );
-isa_ok($nl, 'Nagios::MKLivestatus', 'single args');
-
-#########################
 # create object with hash args
-$nl = Nagios::MKLivestatus->new(
+my $nl = Nagios::MKLivestatus->new(
                                     verbose             => 0,
                                     socket              => $socket_path,
                                     line_seperator      => $line_seperator,
                                     column_seperator    => $column_seperator,
                                 );
-isa_ok($nl, 'Nagios::MKLivestatus', 'new hash args');
+isa_ok($nl, 'Nagios::MKLivestatus');
 
 #########################
 # do some sample querys
@@ -50,6 +54,7 @@ is_deeply($hosts2, $test_host_result_hash, 'selectall_arrayref GET hosts sliced'
 # exit tests
 my $exited_ok = $nl->do("exit");
 is($exited_ok, 1, 'exiting test socket');
+$thr->join();
 exit;
 
 

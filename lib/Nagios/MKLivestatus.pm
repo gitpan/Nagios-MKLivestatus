@@ -7,7 +7,7 @@ use IO::Socket;
 use Data::Dumper;
 use Carp;
 
-our $VERSION = '0.11';
+our $VERSION = '0.12';
 
 
 =head1 NAME
@@ -81,6 +81,16 @@ sub new {
     return $self;
 }
 
+=head1 METHODS
+
+=over 4
+
+=item do
+
+send a single statement without fetching the result
+
+=cut
+
 sub do {
     my $self      = shift;
     my $statement = shift;
@@ -88,37 +98,19 @@ sub do {
     return(1);
 }
 
-sub _send {
-    my $self      = shift;
-    my $statement = shift;
-    if(!-S $self->{'socket'}) {
-        croak("failed to open socket $self->{'socket'}: $!");
-    }
-    my $sock = IO::Socket::UNIX->new($self->{'socket'});
-    if(!defined $sock or !$sock->connected()) {
-        croak("failed to connect: $!");
-    }
+=over 4
 
-    my ($recv, @result);
-    my $send = "$statement\nSeparators: $self->{'line_seperator'} $self->{'column_seperator'} $self->{'list_seperator'} $self->{'host_service_seperator'}\n";
-    print "> ".Dumper($send) if $self->{'verbose'};
-    print $sock $send;
-    $sock->shutdown(1) or croak("shutdown failed: $!");
-    while(<$sock>) { $recv .= $_; }
-    print "< ".Dumper($recv) if $self->{'verbose'};
+=item selectall_arrayref
 
-    return undef if !defined $recv;
+send a query an get a array reference of arrays
 
-    my $line_seperator = chr($self->{'line_seperator'});
-    my $col_seperator  = chr($self->{'column_seperator'});
+    my $arr_refs = $nl->selectall_arrayref("GET hosts");
 
-    for my $line (split/$line_seperator/, $recv) {
-        push @result, [ split/$col_seperator/, $line ];
-    }
+to get a array of hash references do something like
 
-    my $keys = shift @result;
-    return({ keys => $keys, result => \@result});
-}
+    my $hash_refs = $nl->selectall_arrayref("GET hosts", { slice => {} });
+
+=cut
 
 sub selectall_arrayref {
     my $self      = shift;
@@ -149,6 +141,38 @@ sub selectall_arrayref {
 #selectrow_array($statement);
 #selectrow_arrayref($statement);
 #selectrow_hashref($statement);
+
+sub _send {
+    my $self      = shift;
+    my $statement = shift;
+    if(!-S $self->{'socket'}) {
+        croak("failed to open socket $self->{'socket'}: $!");
+    }
+    my $sock = IO::Socket::UNIX->new($self->{'socket'});
+    if(!defined $sock or !$sock->connected()) {
+        croak("failed to connect: $!");
+    }
+
+    my ($recv, @result);
+    my $send = "$statement\nSeparators: $self->{'line_seperator'} $self->{'column_seperator'} $self->{'list_seperator'} $self->{'host_service_seperator'}\n";
+    print "> ".Dumper($send) if $self->{'verbose'};
+    print $sock $send;
+    $sock->shutdown(1) or croak("shutdown failed: $!");
+    while(<$sock>) { $recv .= $_; }
+    print "< ".Dumper($recv) if $self->{'verbose'};
+
+    return if !defined $recv;
+
+    my $line_seperator = chr($self->{'line_seperator'});
+    my $col_seperator  = chr($self->{'column_seperator'});
+
+    for my $line (split/$line_seperator/, $recv) {
+        push @result, [ split/$col_seperator/, $line ];
+    }
+
+    my $keys = shift @result;
+    return({ keys => $keys, result => \@result});
+}
 
 
 1;
