@@ -7,7 +7,7 @@ use IO::Socket;
 use Data::Dumper;
 use Carp;
 
-our $VERSION = '0.13';
+our $VERSION = '0.14';
 
 
 =head1 NAME
@@ -49,7 +49,6 @@ be a the C<socket> specification.
 
 =cut
 
-########################################
 sub new {
     my $class = shift;
     unshift(@_, "socket") if scalar @_ == 1;
@@ -81,6 +80,7 @@ sub new {
     return $self;
 }
 
+
 ########################################
 
 =head1 METHODS
@@ -89,7 +89,10 @@ sub new {
 
 =item do
 
-send a single statement without fetching the result
+ do($statement)
+
+ Send a single statement without fetching the result.
+ Always returns true.
 
 =cut
 
@@ -100,30 +103,48 @@ sub do {
     return(1);
 }
 
+
 ########################################
 
-=item selectall_arrayref($statement)
+=item selectall_arrayref
 
-send a query an get a array reference of arrays
+ selectall_arrayref($statement)
+ selectall_arrayref($statement, %opts)
+ selectall_arrayref($statement, %opts, $number)
+
+ Sends a query and returns an array reference of arrays
 
     my $arr_refs = $nl->selectall_arrayref("GET hosts");
 
-to get a array of hash references do something like
+ to get an array of hash references do something like
 
-    my $hash_refs = $nl->selectall_arrayref("GET hosts", { slice => {} });
+    my $hash_refs = $nl->selectall_arrayref("GET hosts", { Slice => {} });
+
+ to get an array of hash references from the first 2 returned rows only
+
+    my $hash_refs = $nl->selectall_arrayref("GET hosts", { Slice => {} }, 2);
 
 =cut
 
 sub selectall_arrayref {
     my $self      = shift;
     my $statement = shift;
-    my $slice     = shift;
+    my $opt       = shift;
+    my $number    = shift;
 
-    croak("no statement") if !defined $statement;
+    # make opt hash keys lowercase
+    %{$opt} = map { lc $_ => $opt->{$_} } keys %{$opt};
 
     my $result = $self->_send($statement);
 
-    if(defined $slice and ref $slice eq 'HASH') {
+    # trim result set down to excepted row count
+    if(defined $number and $number >= 1) {
+        if(scalar @{$result->{'result'}} > $number) {
+            @{$result->{'result'}} = @{$result->{'result'}}[0..$number-1];
+        }
+    }
+
+    if(defined $opt and ref $opt eq 'HASH' and exists $opt->{'slice'}) {
         # make an array of hashes
         my @hash_refs;
         for my $res (@{$result->{'result'}}) {
@@ -142,9 +163,11 @@ sub selectall_arrayref {
 
 ########################################
 
-=item selectall_hashref($statement, $key_field);
+=item selectall_hashref
 
-send a query an get a hashref
+ selectall_hashref($statement, $key_field)
+
+ Sends a query and returns a hashref with the given key
 
     my $hashrefs = $nl->selectall_hashref("GET hosts", "name");
 
@@ -155,11 +178,9 @@ sub selectall_hashref {
     my $statement = shift;
     my $key_field = shift;
 
-    croak("no statement")                          if !defined $statement;
     croak("key is required for selectall_hashref") if !defined $key_field;
 
-    my $result = $self->selectall_arrayref($statement, { slice => 1 });
-    return if !defined $result;
+    my $result = $self->selectall_arrayref($statement, { Slice => {} });
 
     my %indexed;
     for my $row (@{$result}) {
@@ -170,16 +191,145 @@ sub selectall_hashref {
 }
 
 
+########################################
 
-#selectcol_arrayref($statement);
-#selectcol_arrayref($statement, \%attr);
-#selectrow_array($statement);
-#selectrow_arrayref($statement);
-#selectrow_hashref($statement);
+=item selectcol_arrayref
 
+ selectcol_arrayref($statement)
+ selectcol_arrayref($statement, %opt )
+
+ Sends a query an returns an arrayref for the first columns
+
+    my $array_ref = $nl->selectcol_arrayref("GET hosts\nColumns: name");
+
+    $VAR1 = [
+              'localhost',
+              'gateway',
+            ];
+
+ returns an empty array if nothing was found
+
+
+ to get different columns use this
+
+    my $array_ref = $nl->selectcol_arrayref("GET hosts\nColumns: name, contacts", { Columns => [2] } );
+
+ you can link 2 columns in a hash result set
+
+    my %hash = @{$nl->selectcol_arrayref("GET hosts\nColumns: name, contacts", { Columns => [1,2] } )};
+
+    produces a hash with host the contact assosiation
+
+    $VAR1 = {
+              'localhost' => 'user1',
+              'gateway'   => 'user2'
+            };
+
+=cut
+
+sub selectcol_arrayref {
+    my $self      = shift;
+    my $statement = shift;
+    my $opt       = shift;
+
+    # make opt hash keys lowercase
+    %{$opt} = map { lc $_ => $opt->{$_} } keys %{$opt};
+
+    # if now colums are set, use just the first one
+    if(!defined $opt->{'columns'} or ref $opt->{'columns'} ne 'ARRAY') {
+        @{$opt->{'columns'}} = qw{1};
+    }
+
+    my $result = $self->selectall_arrayref($statement);
+
+    my @column;
+    for my $row (@{$result}) {
+        for my $nr (@{$opt->{'columns'}}) {
+            push @column, $row->[$nr-1];
+        }
+    }
+    return(\@column);
+}
+
+
+########################################
+
+=item selectrow_array
+
+ selectrow_array($statement)
+
+ Sends a query and returns an array for the first row
+
+    my @array = $nl->selectrow_array("GET hosts");
+
+ returns undef if nothing was found
+
+=cut
+sub selectrow_array {
+    my $self      = shift;
+    my $statement = shift;
+
+    my @result = @{$self->selectall_arrayref($statement, {}, 1)};
+    return @{$result[0]} if scalar @result > 0;
+    return;
+}
+
+
+########################################
+
+=item selectrow_arrayref
+
+ selectrow_arrayref($statement)
+
+ Sends a query and returns an array reference for the first row
+
+    my $arrayref = $nl->selectrow_arrayref("GET hosts");
+
+ returns undef if nothing was found
+
+=cut
+sub selectrow_arrayref {
+    my $self      = shift;
+    my $statement = shift;
+
+    my @result = @{$self->selectall_arrayref($statement, {}, 1)};
+    return $result[0] if scalar @result > 0;
+    return;
+}
+
+
+########################################
+
+=item selectrow_hashref
+
+ selectrow_hashref($statement)
+
+ Sends a query and returns a hash reference for the first row
+
+    my $hashref = $nl->selectrow_hashref("GET hosts");
+
+ returns undef if nothing was found
+
+=cut
+sub selectrow_hashref {
+    my $self      = shift;
+    my $statement = shift;
+
+    my $result = $self->selectall_arrayref($statement, { Slice => {} }, 1);
+    return $result->[0] if scalar @{$result} > 0;
+    return;
+}
+
+
+########################################
+# INTERNAL SUBS
+########################################
 sub _send {
     my $self      = shift;
     my $statement = shift;
+
+    croak("no statement") if !defined $statement;
+
     if(!-S $self->{'socket'}) {
         croak("failed to open socket $self->{'socket'}: $!");
     }
@@ -195,6 +345,7 @@ sub _send {
     $sock->shutdown(1) or croak("shutdown failed: $!");
     while(<$sock>) { $recv .= $_; }
     print "< ".Dumper($recv) if $self->{'verbose'};
+    close($sock);
 
     return if !defined $recv;
 
@@ -205,7 +356,15 @@ sub _send {
         push @result, [ split/$col_seperator/, $line ];
     }
 
-    my $keys = shift @result;
+    # for querys with column header, no seperate columns will be returned
+    my $keys;
+    if($statement =~ m/^Columns: (.*)$/m) {
+        my @keys = split/\s+/, $1;
+        $keys = \@keys;
+    } else {
+        $keys = shift @result;
+    }
+
     return({ keys => $keys, result => \@result});
 }
 
@@ -216,7 +375,8 @@ sub _send {
 
 =head1 SEE ALSO
 
-For more information see the Livestatus page: http://mathias-kettner.de/checkmk_livestatus.html
+For more information about the query syntax and the livestatus plugin installation
+see the Livestatus page: http://mathias-kettner.de/checkmk_livestatus.html
 
 =head1 AUTHOR
 
