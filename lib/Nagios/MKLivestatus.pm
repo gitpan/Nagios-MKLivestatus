@@ -7,7 +7,7 @@ use IO::Socket;
 use Data::Dumper;
 use Carp;
 
-our $VERSION = '0.14';
+our $VERSION = '0.15';
 
 
 =head1 NAME
@@ -110,7 +110,7 @@ sub do {
 
  selectall_arrayref($statement)
  selectall_arrayref($statement, %opts)
- selectall_arrayref($statement, %opts, $number)
+ selectall_arrayref($statement, %opts, $limit )
 
  Sends a query and returns an array reference of arrays
 
@@ -124,13 +124,15 @@ sub do {
 
     my $hash_refs = $nl->selectall_arrayref("GET hosts", { Slice => {} }, 2);
 
+ use limit to limit the result to this number of rows
+
 =cut
 
 sub selectall_arrayref {
     my $self      = shift;
     my $statement = shift;
     my $opt       = shift;
-    my $number    = shift;
+    my $limit     = shift;
 
     # make opt hash keys lowercase
     %{$opt} = map { lc $_ => $opt->{$_} } keys %{$opt};
@@ -138,9 +140,9 @@ sub selectall_arrayref {
     my $result = $self->_send($statement);
 
     # trim result set down to excepted row count
-    if(defined $number and $number >= 1) {
-        if(scalar @{$result->{'result'}} > $number) {
-            @{$result->{'result'}} = @{$result->{'result'}}[0..$number-1];
+    if(defined $limit and $limit >= 1) {
+        if(scalar @{$result->{'result'}} > $limit) {
+            @{$result->{'result'}} = @{$result->{'result'}}[0..$limit-1];
         }
     }
 
@@ -210,13 +212,13 @@ sub selectall_hashref {
  returns an empty array if nothing was found
 
 
- to get different columns use this
+ to get a different column use this
 
-    my $array_ref = $nl->selectcol_arrayref("GET hosts\nColumns: name, contacts", { Columns => [2] } );
+    my $array_ref = $nl->selectcol_arrayref("GET hosts\nColumns: name contacts", { Columns => [2] } );
 
  you can link 2 columns in a hash result set
 
-    my %hash = @{$nl->selectcol_arrayref("GET hosts\nColumns: name, contacts", { Columns => [1,2] } )};
+    my %hash = @{$nl->selectcol_arrayref("GET hosts\nColumns: name contacts", { Columns => [1,2] } )};
 
     produces a hash with host the contact assosiation
 
@@ -335,10 +337,11 @@ sub _send {
     }
     my $sock = IO::Socket::UNIX->new($self->{'socket'});
     if(!defined $sock or !$sock->connected()) {
-        croak("failed to connect: $!");
+        croak("failed to connect to ($self->{'socket'}): $!");
     }
 
     my ($recv, @result);
+    chomp($statement);
     my $send = "$statement\nSeparators: $self->{'line_seperator'} $self->{'column_seperator'} $self->{'list_seperator'} $self->{'host_service_seperator'}\n";
     print "> ".Dumper($send) if $self->{'verbose'};
     print $sock $send;

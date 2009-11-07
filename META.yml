@@ -1,10 +1,10 @@
 --- #YAML:1.0
 name:               Nagios-MKLivestatus
-version:            0.14
+version:            0.15
 abstract:           access nagios runtime data from check_mk livestatus Nagios addon
 author:
     - Sven Nierlein <nierlein@cpan.org>
-license:            unknown
+license:            perl
 distribution_type:  module
 configure_requires:
     ExtUtils::MakeMaker:  0
