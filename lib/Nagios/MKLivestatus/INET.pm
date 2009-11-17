@@ -44,33 +44,42 @@ sub new {
 }
 
 
-
 ########################################
-sub _send_socket {
-    my $self      = shift;
-    my $statement = shift;
 
-    croak("no statement") if !defined $statement;
+=head1 METHODS
 
+=over 4
+
+=cut
+
+sub _open {
+    my $self = shift;
     my $sock = IO::Socket::INET->new($self->{'server'});
     if(!defined $sock or !$sock->connected()) {
         croak("failed to connect to $self->{'server'}: $!");
     }
+    return($sock);
+}
 
-    my $recv;
-    print $sock $statement;
-    $sock->shutdown(1) or croak("shutdown failed: $!");
-    while(<$sock>) { $recv .= $_; }
-    close($sock);
 
-    return if !defined $recv;
+########################################
 
-    return($recv);
+=item close
+
+close the sock
+
+=cut
+
+sub _close {
+    my $self = shift;
+    my $sock = shift;
+    return close($sock);
 }
 
 
 1;
 
+=back
 
 =head1 AUTHOR
 
