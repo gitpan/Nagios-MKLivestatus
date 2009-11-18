@@ -10,7 +10,7 @@ if ( ! defined $ENV{TEST_SOCKET} and !defined $ENV{TEST_SERVER} ) {
     my $msg = 'Author test.  Set $ENV{TEST_SOCKET} and $ENV{TEST_SERVER} to run';
     plan( skip_all => $msg );
 } else {
-    plan(tests => 61);
+    plan(tests => 217);
 }
 
 use_ok('Nagios::MKLivestatus');
@@ -35,7 +35,7 @@ my $objects_to_test = {
   'unix_keepalive' => Nagios::MKLivestatus->new(
                                       verbose             => 0,
                                       socket              => $ENV{TEST_SOCKET},
-#                                      keepalive           => 1,
+                                      keepalive           => 1,
                                     ),
 
   # TCP
@@ -55,7 +55,7 @@ my $objects_to_test = {
   'inet_keepalive' => Nagios::MKLivestatus->new(
                                       verbose             => 0,
                                       server              => $ENV{TEST_SERVER},
-#                                      keepalive           => 1,
+                                      keepalive           => 1,
                                     ),
 };
 
@@ -74,6 +74,16 @@ for my $key (keys %{$objects_to_test}) {
     my $nl = $objects_to_test->{$key};
     isa_ok($nl, 'Nagios::MKLivestatus') or BAIL_OUT("no need to continue without a proper Nagios::MKLivestatus object: ".$key);
 
+    # dont die on errors
+    $nl->errors_are_fatal(1);
+
+    #########################
+    # set downtime for a host and service
+    my $firsthost = $nl->select_scalar_value("GET hosts\nColumn: name\nLimit: 1");
+    $nl->do('COMMAND ['.time().'] SCHEDULE_HOST_DOWNTIME;'.$firsthost.';'.time().';'.(time()+30).';0;0;30;'.$0.';Some Downtime Comment');
+    my $firstservice = $nl->select_scalar_value("GET service\nColumn: description\nFilter: host_name: $firsthost\nLimit: 1");
+    $nl->do('COMMAND ['.time().'] SCHEDULE_SERVICE_DOWNTIME;'.$firsthost.';'.$firsthost.';'.time().';'.(time()+30).';0;0;30;'.$0.';Some Downtime Comment');
+
     #########################
     # check keys
     for my $type (keys %{$excpected_keys}) {
@@ -91,11 +101,78 @@ for my $key (keys %{$objects_to_test}) {
     is($rt, '1', $key.' test command');
 
     #########################
-    # check service keys
-    #$statement      = "GET services\nLimit: 1";
-    #$hash_ref       = $nl->selectrow_hashref($statement );
-    #my @servicekeys = sort keys %{$hash_ref};
-    #is_deeply(\@servicekeys, $expected_servicekeys, $key.' servicekeys');
-    #print Dumper(\@servicekeys);
-    #diag($ary_ref);
+    # check for errors
+    #$nl->{'verbose'} = 1;
+    TODO: {
+        my $statement = "GET hosts\nLimit: 1";
+        my $hash_ref  = $nl->selectrow_hashref($statement );
+        isnt($hash_ref, undef, $key.' test error 200 body');
+        is($Nagios::MKLivestatus::ErrorCode, undef, $key.' test error 200 status');
+
+        $statement = "BLAH hosts";
+        $hash_ref  = $nl->selectrow_hashref($statement );
+        is($hash_ref, undef, $key.' test error 401 body');
+        is($Nagios::MKLivestatus::ErrorCode, '401', $key.' test error 401 status');
+
+        $statement = "GET hosts\nLimit: ";
+        $hash_ref  = $nl->selectrow_hashref($statement );
+        is($hash_ref, undef, $key.' test error 403 body');
+        is($Nagios::MKLivestatus::ErrorCode, '403', $key.' test error 403 status');
+
+        $statement = "GET unknowntable\nLimit: 1";
+        $hash_ref  = $nl->selectrow_hashref($statement );
+        is($hash_ref, undef, $key.' test error 404 body');
+        is($Nagios::MKLivestatus::ErrorCode, '404', $key.' test error 404 status');
+
+        $statement = "GET hosts\nColumns: unknown";
+        $hash_ref  = $nl->selectrow_hashref($statement );
+        is($hash_ref, undef, $key.' test error 405 body');
+        is($Nagios::MKLivestatus::ErrorCode, '405', $key.' test error 405 status');
+    };
+
+    #########################
+    # some more broken statements
+    TODO: {
+        my $statement = "GET ";
+        my $hash_ref  = $nl->selectrow_hashref($statement );
+        is($hash_ref, undef, $key.' test error 403 body');
+        is($Nagios::MKLivestatus::ErrorCode, '403', $key.' test error 403 status: GET ');
+
+        $statement = "GET hosts\nColumns: name, name";
+        $hash_ref  = $nl->selectrow_hashref($statement );
+        is($hash_ref, undef, $key.' test error 405 body');
+        is($Nagios::MKLivestatus::ErrorCode, '405', $key.' test error 405 status: GET hosts\nColumns: name, name');
+
+        $statement = "GET hosts\nColumns: ";
+        $hash_ref  = $nl->selectrow_hashref($statement );
+        is($hash_ref, undef, $key.' test error 405 body');
+        is($Nagios::MKLivestatus::ErrorCode, '405', $key.' test error 405 status: GET hosts\nColumns: ');
+    };
+
+    #########################
+    # some forbidden headers
+    my $statement = "GET hosts\nKeepAlive: on";
+    my $hash_ref  = $nl->selectrow_hashref($statement );
+    is($hash_ref, undef, $key.' test error 496 body');
+    is($Nagios::MKLivestatus::ErrorCode, '496', $key.' test error 496 status: KeepAlive: on');
+
+    $statement = "GET hosts\nResponseHeader: fixed16";
+    $hash_ref  = $nl->selectrow_hashref($statement );
+    is($hash_ref, undef, $key.' test error 495 body');
+    is($Nagios::MKLivestatus::ErrorCode, '495', $key.' test error 495 status: ResponseHeader: fixed16');
+
+    $statement = "GET hosts\nColumnHeaders: on";
+    $hash_ref  = $nl->selectrow_hashref($statement );
+    is($hash_ref, undef, $key.' test error 494 body');
+    is($Nagios::MKLivestatus::ErrorCode, '494', $key.' test error 494 status: ColumnHeader: on');
+
+    $statement = "GET hosts\nOuputFormat: json";
+    $hash_ref  = $nl->selectrow_hashref($statement );
+    is($hash_ref, undef, $key.' test error 493 body');
+    is($Nagios::MKLivestatus::ErrorCode, '493', $key.' test error 493 status: OutputForma: json');
+
+    $statement = "GET hosts\nSeparators: 0 1 2 3";
+    $hash_ref  = $nl->selectrow_hashref($statement );
+    is($hash_ref, undef, $key.' test error 492 body');
+    is($Nagios::MKLivestatus::ErrorCode, '492', $key.' test error 492 status: Seperators: 0 1 2 3');
 }
