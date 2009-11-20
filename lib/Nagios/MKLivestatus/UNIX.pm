@@ -19,17 +19,13 @@ Nagios::MKLivestatus::UNIX - connector with unix sockets
 
 =head1 CONSTRUCTOR
 
-=over 4
-
-=item new ( [ARGS] )
+=head2 new ( [ARGS] )
 
 Creates an C<Nagios::MKLivestatus::UNIX> object. C<new> takes at least the socketpath.
 Arguments are the same as in C<Nagios::MKLivestatus>.
 
 If the constructor is only passed a single argument, it is assumed to
 be a the C<socket> specification. Use either socker OR server.
-
-=back
 
 =cut
 
@@ -50,8 +46,6 @@ sub new {
 
 =head1 METHODS
 
-=over 4
-
 =cut
 
 sub _open {
@@ -59,7 +53,10 @@ sub _open {
     if(!-S $self->{'socket'}) {
         croak("failed to open socket $self->{'socket'}: $!");
     }
-    my $sock = IO::Socket::UNIX->new($self->{'socket'});
+    my $sock = IO::Socket::UNIX->new(
+                                        Peer     => $self->{'socket'},
+                                        timeout  => $self->{'timeout'},
+                                     );
     if(!defined $sock or !$sock->connected()) {
         my $msg = "failed to connect to $self->{'socket'} :$!";
         if($self->{'errors_are_fatal'}) {
@@ -75,12 +72,6 @@ sub _open {
 
 ########################################
 
-=item close
-
-close the sock
-
-=cut
-
 sub _close {
     my $self = shift;
     my $sock = shift;
@@ -89,8 +80,6 @@ sub _close {
 
 
 1;
-
-=back
 
 =head1 AUTHOR
 
