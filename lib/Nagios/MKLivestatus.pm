@@ -6,7 +6,7 @@ use warnings;
 use Data::Dumper;
 use Carp;
 
-our $VERSION = '0.20';
+our $VERSION = '0.22';
 
 
 =head1 NAME
@@ -491,11 +491,9 @@ sub _send {
         if($statement !~ m/^COMMAND/mx) {
             $header .= "Separators: $self->{'line_seperator'} $self->{'column_seperator'} $self->{'list_seperator'} $self->{'host_service_seperator'}\n";
             $header .= "ResponseHeader: fixed16\n";
-            #$header .= "ColumnHeaders: on\n";
-
-        }
-        if($self->{'keepalive'}) {
-            $header .= "KeepAlive: on\n";
+            if($self->{'keepalive'}) {
+                $header .= "KeepAlive: on\n";
+            }
         }
         my $send = "$statement\n$header";
         print "> ".Dumper($send) if $self->{'verbose'};
@@ -594,7 +592,7 @@ sub _send_socket {
 
     # COMMAND statements never return something
     if($statement =~ m/^COMMAND/mx) {
-        $self->_close($sock) unless $self->{'keepalive'};
+        $self->_close($sock);
         return('201', $self->_get_error(201), undef);
     }
 
@@ -615,18 +613,20 @@ sub _socket_error {
     my $self      = shift;
     my $statement = shift;
     my $sock      = shift;
-    my $message   = shift;
-    print "statement           ".Dumper($statement);
-    print "socket->sockname()  ".Dumper($sock->sockname());
-    print "socket->connected() ".Dumper($sock->connected());
-    print "socket->error()     ".Dumper($sock->error());
-    print "message             ".Dumper($message);
+    my $body      = shift;
+
+    my $message = "\n";
+    $message   .= "statement           ".Dumper($statement);
+    $message   .= "socket->sockname()  ".Dumper($sock->sockname());
+    $message   .= "socket->connected() ".Dumper($sock->connected());
+    $message   .= "socket->error()     ".Dumper($sock->error());
+    $message   .= "message             ".Dumper($body);
     if($self->{'errors_are_fatal'}) {
         confess($message);
     } else {
         carp($message);
     }
-    return(500, $self->_get_error(500), undef);
+    return(500, $self->_get_error(500), $message);
 }
 
 ########################################
