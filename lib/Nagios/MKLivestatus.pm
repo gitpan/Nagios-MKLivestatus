@@ -6,7 +6,7 @@ use warnings;
 use Data::Dumper;
 use Carp;
 
-our $VERSION = '0.22';
+our $VERSION = '0.24';
 
 
 =head1 NAME
@@ -198,6 +198,7 @@ sub selectall_arrayref {
 =head2 selectall_hashref
 
  selectall_hashref($statement, $key_field)
+ selectall_hashref($statement, $key_field, %opts)
 
  Sends a query and returns a hashref with the given key
 
@@ -209,10 +210,13 @@ sub selectall_hashref {
     my $self      = shift;
     my $statement = shift;
     my $key_field = shift;
+    my $opt       = shift;
+
+    $opt->{'Slice'} = {} unless defined $opt->{'Slice'};
 
     croak("key is required for selectall_hashref") if !defined $key_field;
 
-    my $result = $self->selectall_arrayref($statement, { Slice => {} });
+    my $result = $self->selectall_arrayref($statement, $opt);
 
     my %indexed;
     for my $row (@{$result}) {
@@ -292,6 +296,7 @@ sub selectcol_arrayref {
 =head2 selectrow_array
 
  selectrow_array($statement)
+ selectrow_array($statement, %opts)
 
  Sends a query and returns an array for the first row
 
@@ -303,8 +308,10 @@ sub selectcol_arrayref {
 sub selectrow_array {
     my $self      = shift;
     my $statement = shift;
+    my $opt       = shift;
+    $opt          = {} unless defined $opt;
 
-    my @result = @{$self->selectall_arrayref($statement, {}, 1)};
+    my @result = @{$self->selectall_arrayref($statement, $opt, 1)};
     return @{$result[0]} if scalar @result > 0;
     return;
 }
@@ -315,6 +322,7 @@ sub selectrow_array {
 =head2 selectrow_arrayref
 
  selectrow_arrayref($statement)
+ selectrow_arrayref($statement, %opts)
 
  Sends a query and returns an array reference for the first row
 
@@ -326,8 +334,10 @@ sub selectrow_array {
 sub selectrow_arrayref {
     my $self      = shift;
     my $statement = shift;
+    my $opt       = shift;
+    $opt          = {} unless defined $opt;
 
-    my $result = $self->selectall_arrayref($statement, {}, 1);
+    my $result = $self->selectall_arrayref($statement, $opt, 1);
     return if !defined $result;
     return $result->[0] if scalar @{$result} > 0;
     return;
@@ -339,6 +349,7 @@ sub selectrow_arrayref {
 =head2 selectrow_hashref
 
  selectrow_hashref($statement)
+ selectrow_hashref($statement, %opt)
 
  Sends a query and returns a hash reference for the first row
 
@@ -350,8 +361,11 @@ sub selectrow_arrayref {
 sub selectrow_hashref {
     my $self      = shift;
     my $statement = shift;
+    my $opt       = shift;
 
-    my $result = $self->selectall_arrayref($statement, { Slice => {} }, 1);
+    $opt->{'Slice'} = {} unless defined $opt->{'Slice'};
+
+    my $result = $self->selectall_arrayref($statement, $opt, 1);
     return if !defined $result;
     return $result->[0] if scalar @{$result} > 0;
     return;
@@ -374,6 +388,7 @@ sub selectrow_hashref {
 sub select_scalar_value {
     my $self      = shift;
     my $statement = shift;
+    my $opt       = shift;
 
     my $row = $self->selectrow_arrayref($statement);
     return if !defined $row;
@@ -432,13 +447,17 @@ sub verbose {
 sub _send {
     my $self      = shift;
     my $statement = shift;
-    my $header = "";
+    my $header    = "";
+    my $keys;
 
     $Nagios::MKLivestatus::ErrorCode = 0;
     undef $Nagios::MKLivestatus::ErrorMessage;
 
     return(490, $self->_get_error(490), undef) if !defined $statement;
     chomp($statement);
+
+    # remove empty lines from statement
+    $statement =~ s/\n+/\n/gmx;
 
     my($status,$msg,$body);
     if($statement =~ m/^Separators:/mx) {
@@ -487,6 +506,13 @@ sub _send {
 
     else {
 
+        # for querys with column header, no seperate columns will be returned
+        if($statement =~ m/^Columns:\ (.*)$/mx) {
+            ($statement,$keys) = $self->_extract_keys_from_columns_header($statement);
+        } elsif($statement =~ m/^Stats:\ (.*)$/mx or $statement =~ m/^StatsGroupBy:\ (.*)$/mx) {
+            ($statement,$keys) = $self->_extract_keys_from_stats_statement($statement);
+        }
+
         # Commands need no additional header
         if($statement !~ m/^COMMAND/mx) {
             $header .= "Separators: $self->{'line_seperator'} $self->{'column_seperator'} $self->{'list_seperator'} $self->{'host_service_seperator'}\n";
@@ -495,6 +521,7 @@ sub _send {
                 $header .= "KeepAlive: on\n";
             }
         }
+        chomp($statement);
         my $send = "$statement\n$header";
         print "> ".Dumper($send) if $self->{'verbose'};
         ($status,$msg,$body) = $self->_send_socket($send);
@@ -536,13 +563,7 @@ sub _send {
     ## use critic
 
     # for querys with column header, no seperate columns will be returned
-    my $keys;
-    if($statement =~ m/^Columns:\ (.*)$/mx) {
-        my @keys = split/\s+/mx, $1;
-        $keys = \@keys;
-    } elsif($statement =~ m/^Stats:\ (.*)$/mx) {
-        @{$keys} = ($statement =~ m/^Stats:\ (.*)$/gmx);
-    } else {
+    if(!defined $keys) {
         $keys = shift @result;
     }
 
@@ -598,7 +619,7 @@ sub _send_socket {
 
     $sock->read($header, 16) or return($self->_socket_error($statement, $sock, 'reading header from socket failed'));
     print "header: $header" if $self->{'verbose'};
-    my($status, $msg, $content_length) = $self->_parse_header($header);
+    my($status, $msg, $content_length) = $self->_parse_header($header, $sock);
     return($status, $msg, undef) if !defined $content_length;
     if($content_length > 0) {
         $sock->read($recv, $content_length) or return($self->_socket_error($statement, $sock, 'reading body from socket failed'));
@@ -633,6 +654,7 @@ sub _socket_error {
 sub _parse_header {
     my $self   = shift;
     my $header = shift;
+    my $sock   = shift;
 
     if(!defined $header) {
         return(497, $self->_get_error(497), undef);
@@ -647,12 +669,119 @@ sub _parse_header {
     my $status         = substr($header,0,3);
     my $content_length = substr($header,5);
     if($content_length !~ m/^\s*(\d+)$/mx) {
-        return(499, $self->_get_error(499), undef);
+        return(499, $self->_get_error(499)."\ngot: ".$header.<$sock>, undef);
     } else {
         $content_length = $1;
     }
 
     return($status, $self->_get_error($status), $content_length);
+}
+
+########################################
+
+=head1 COLUMN ALIAS
+
+In addition to the normal query syntax from the livestatus addon, it is
+possible to set column aliases in various ways.
+
+A valid Columns: Header could look like this:
+
+    my $hosts = $nl->selectall_arrayref("GET hosts\nColumns: state as status");
+
+Stats queries could be aliased too:
+
+    my $stats = $nl->selectall_arrayref("GET hosts\nStats: state = 0 as up");
+
+This syntax is available for: Stats, StatsAnd, StatsOr and StatsGroupBy
+
+
+An alternative way to set column aliases is to define rename option key/value pairs:
+
+    my $hosts = $nl->selectall_arrayref("GET hosts\nColumns: name", { rename => { 'name' => 'hostname' } });
+
+=cut
+
+########################################
+sub _extract_keys_from_stats_statement {
+    my $self      = shift;
+    my $statement = shift;
+
+    my(@header, $new_statement);
+
+    for my $line (split/\n/mx, $statement) {
+        if($line =~ m/^Stats:\ (.*)\s+as\s+(.*)$/mxi) {
+            push @header, $2;
+            $line = 'Stats: '.$1;
+        }
+        elsif($line =~ m/^Stats:\ (.*)$/mx) {
+            push @header, $1;
+        }
+
+        if($line =~ m/^StatsAnd:\ (\d+)\s+as\s+(.*)$/mx) {
+            for(my $x = 0; $x < $1; $x++) {
+                pop @header;
+            }
+            $line = 'StatsAnd: '.$1;
+            push @header, $2;
+        }
+        elsif($line =~ m/^StatsAnd:\ (\d+)$/mx) {
+            my @to_join;
+            for(my $x = 0; $x < $1; $x++) {
+                unshift @to_join, pop @header;
+            }
+            push @header, join(' && ', @to_join);
+        }
+
+        if($line =~ m/^StatsOr:\ (\d+)\s+as\s+(.*)$/mx) {
+            for(my $x = 0; $x < $1; $x++) {
+                pop @header;
+            }
+            $line = 'StatsOr: '.$1;
+            push @header, $2;
+        }
+        elsif($line =~ m/^StatsOr:\ (\d+)$/mx) {
+            my @to_join;
+            for(my $x = 0; $x < $1; $x++) {
+                unshift @to_join, pop @header;
+            }
+            push @header, join(' || ', @to_join);
+        }
+
+        # StatsGroupBy header are always sent first
+        if($line =~ m/^StatsGroupBy:\ (.*)\s+as\s+(.*)$/mxi) {
+            unshift @header, $2;
+            $line = 'StatsGroupBy: '.$1;
+        }
+        elsif($line =~ m/^StatsGroupBy:\ (.*)$/mx) {
+            unshift @header, $1;
+        }
+        $new_statement .= $line."\n";
+    }
+
+    return($new_statement, \@header);
+}
+
+########################################
+sub _extract_keys_from_columns_header {
+    my $self      = shift;
+    my $statement = shift;
+
+    my(@header, $new_statement);
+    for my $line (split/\n/mx, $statement) {
+        if($line =~ m/^Columns:\s+(.*)$/mx) {
+            for my $column (split/\s+/mx, $1) {
+                if($column eq 'as') {
+                    pop @header;
+                } else {
+                    push @header, $column;
+                }
+            }
+            $line = 'Columns: '.join(' ', @header);
+        }
+        $new_statement .= $line."\n";
+    }
+
+    return($new_statement, \@header);
 }
 
 ########################################
@@ -691,7 +820,7 @@ sub _get_error {
         '496' => 'Keepalive not allowed in statement. Please use the keepalive option in new()',
         '497' => 'got no header',
         '498' => 'header is not exactly 16byte long',
-        '499' => 'failed to get content-length from header',
+        '499' => 'not a valid header (no content-length)',
         '500' => 'socket error',
     };
 
