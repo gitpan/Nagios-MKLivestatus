@@ -6,66 +6,114 @@ use warnings;
 use Data::Dumper;
 use Carp;
 
-our $VERSION = '0.24';
+our $VERSION = '0.26';
 
 
 =head1 NAME
 
-Nagios::MKLivestatus - access nagios runtime data from check_mk livestatus Nagios addon
+Nagios::MKLivestatus - access nagios runtime data from check_mk livestatus
+Nagios addon
 
 =head1 SYNOPSIS
 
     use Nagios::MKLivestatus;
-    my $nl = Nagios::MKLivestatus->new( socket => '/var/lib/nagios3/rw/livestatus.sock' );
+    my $nl = Nagios::MKLivestatus->new(
+      socket => '/var/lib/nagios3/rw/livestatus.sock'
+    );
     my $hosts = $nl->selectall_arrayref("GET hosts");
 
 =head1 DESCRIPTION
 
-This module connects via socket to the check_mk livestatus nagios addon. You first have
-to install and activate the livestatus addon in your nagios installation.
-
+This module connects via socket to the check_mk livestatus nagios addon. You
+first have to install and activate the livestatus addon in your nagios
+installation.
 
 =head1 CONSTRUCTOR
 
 =head2 new ( [ARGS] )
 
-Creates an C<Nagios::MKLivestatus> object. C<new> takes at least the socketpath.
-Arguments are in key-value pairs.
+Creates an C<Nagios::MKLivestatus> object. C<new> takes at least the
+socketpath.  Arguments are in key-value pairs.
 
-    socket                    path to the UNIX socket of check_mk livestatus
-    server                    use this server for a TCP connection
-    verbose                   verbose mode
-    line_seperator            ascii code of the line seperator, defaults to 10, (newline)
-    column_seperator          ascii code of the column seperator, defaults to 0 (null byte)
-    list_seperator            ascii code of the list seperator, defaults to 44 (comma)
-    host_service_seperator    ascii code of the host/service seperator, defaults to 124 (pipe)
-    keepalive                 enable keepalive. Default is off
-    errors_are_fatal          errors will die with an error message. Default: on
-    timeout                   set a general timeout. Used for connect and querys, Default 10sec
+=over 4
+
+=item socket
+
+path to the UNIX socket of check_mk livestatus
+
+=item server
+
+use this server for a TCP connection
+
+=item peer
+
+alternative way to set socket or server, if value contains ':' server is used,
+else socket
+
+=item name
+
+human readable name for this connection, defaults to the the socket/server
+address
+
+=item verbose
+
+verbose mode
+
+=item line_seperator
+
+ascii code of the line seperator, defaults to 10, (newline)
+
+=item column_seperator
+
+ascii code of the column seperator, defaults to 0 (null byte)
+
+=item list_seperator
+
+ascii code of the list seperator, defaults to 44 (comma)
+
+=item host_service_seperator
+
+ascii code of the host/service seperator, defaults to 124 (pipe)
+
+=item keepalive
+
+enable keepalive. Default is off
+
+=item errors_are_fatal
+
+errors will die with an error message. Default: on
+
+=item timeout
+
+set a general timeout. Used for connect and querys, Default 10sec
+
+=back
 
 If the constructor is only passed a single argument, it is assumed to
-be a the C<socket> specification. Use either socker OR server.
+be a the C<peer> specification. Use either socker OR server.
 
 =cut
 
 sub new {
     my $class = shift;
-    unshift(@_, "socket") if scalar @_ == 1;
+    unshift(@_, "peer") if scalar @_ == 1;
     my(%options) = @_;
 
     my $self = {
-                    "verbose"                   => 0,       # enable verbose output
-                    "socket"                    => undef,   # use unix sockets
-                    "server"                    => undef,   # use tcp connections
-                    "line_seperator"            => 10,      # defaults to newline
-                    "column_seperator"          => 0,       # defaults to null byte
-                    "list_seperator"            => 44,      # defaults to comma
-                    "host_service_seperator"    => 124,     # defaults to pipe
-                    "keepalive"                 => 0,       # enable keepalive?
-                    "errors_are_fatal"          => 1,       # die on errors
-                    "backend"                   => undef,   # should be keept undef, used internally
-                    "timeout"                   => 10,
-               };
+      "verbose"                   => 0,       # enable verbose output
+      "socket"                    => undef,   # use unix sockets
+      "server"                    => undef,   # use tcp connections
+      "peer"                      => undef,   # use for socket / server connections
+      "name"                      => undef,   # human readable name
+      "line_seperator"            => 10,      # defaults to newline
+      "column_seperator"          => 0,       # defaults to null byte
+      "list_seperator"            => 44,      # defaults to comma
+      "host_service_seperator"    => 124,     # defaults to pipe
+      "keepalive"                 => 0,       # enable keepalive?
+      "errors_are_fatal"          => 1,       # die on errors
+      "backend"                   => undef,   # should be keept undef, used internally
+      "timeout"                   => 10,
+    };
     bless $self, $class;
 
     for my $opt_key (keys %options) {
@@ -77,10 +125,20 @@ sub new {
         }
     }
 
+    # check if the supplied peer is a socket or a server address
+    if(defined $self->{'peer'}) {
+        if(index($self->{'peer'}, ':') > 0) {
+            $self->{'server'} = $self->{'peer'};
+        } else {
+            $self->{'socket'} = $self->{'peer'};
+        }
+    }
+
     if(defined $self->{'socket'} and defined $self->{'server'}) {
         croak('dont use socket and server at once');
     }
 
+    # check if we got a peer
     if(!defined $self->{'socket'} and !defined $self->{'server'}) {
         croak('please specify either socket or a server');
     }
@@ -97,6 +155,11 @@ sub new {
         }
     }
 
+    if(!defined $self->{'name'}) {
+        $self->{'name'} = $self->{'server'} if defined $self->{'server'};
+        $self->{'name'} = $self->{'socket'} if defined $self->{'socket'};
+    }
+
     return $self;
 }
 
@@ -109,8 +172,8 @@ sub new {
 
  do($statement)
 
- Send a single statement without fetching the result.
- Always returns true.
+Send a single statement without fetching the result.
+Always returns true.
 
 =cut
 
@@ -130,23 +193,34 @@ sub do {
  selectall_arrayref($statement, %opts)
  selectall_arrayref($statement, %opts, $limit )
 
- Sends a query and returns an array reference of arrays
+Sends a query and returns an array reference of arrays
 
     my $arr_refs = $nl->selectall_arrayref("GET hosts");
 
- to get an array of hash references do something like
+to get an array of hash references do something like
 
-    my $hash_refs = $nl->selectall_arrayref("GET hosts", { Slice => {} });
+    my $hash_refs = $nl->selectall_arrayref(
+      "GET hosts", { Slice => {} }
+    );
 
- to get an array of hash references from the first 2 returned rows only
+to get an array of hash references from the first 2 returned rows only
 
-    my $hash_refs = $nl->selectall_arrayref("GET hosts", { Slice => {} }, 2);
+    my $hash_refs = $nl->selectall_arrayref(
+      "GET hosts", { Slice => {} }, 2
+    );
 
- use limit to limit the result to this number of rows
+use limit to limit the result to this number of rows
 
- column aliases can be defined with a rename hash
+column aliases can be defined with a rename hash
 
-    my $hash_refs = $nl->selectall_arrayref("GET hosts", { Slice => {}, rename => { 'name' => 'host_name' } });
+    my $hash_refs = $nl->selectall_arrayref(
+      "GET hosts", {
+        Slice => {},
+        rename => {
+          'name' => 'host_name'
+        }
+      }
+    );
 
 =cut
 
@@ -200,7 +274,7 @@ sub selectall_arrayref {
  selectall_hashref($statement, $key_field)
  selectall_hashref($statement, $key_field, %opts)
 
- Sends a query and returns a hashref with the given key
+Sends a query and returns a hashref with the given key
 
     my $hashrefs = $nl->selectall_hashref("GET hosts", "name");
 
@@ -237,7 +311,7 @@ sub selectall_hashref {
  selectcol_arrayref($statement)
  selectcol_arrayref($statement, %opt )
 
- Sends a query an returns an arrayref for the first columns
+Sends a query an returns an arrayref for the first columns
 
     my $array_ref = $nl->selectcol_arrayref("GET hosts\nColumns: name");
 
@@ -246,18 +320,25 @@ sub selectall_hashref {
               'gateway',
             ];
 
- returns an empty array if nothing was found
+returns an empty array if nothing was found
 
+to get a different column use this
 
- to get a different column use this
-
-    my $array_ref = $nl->selectcol_arrayref("GET hosts\nColumns: name contacts", { Columns => [2] } );
+    my $array_ref = $nl->selectcol_arrayref(
+       "GET hosts\nColumns: name contacts",
+       { Columns => [2] }
+    );
 
  you can link 2 columns in a hash result set
 
-    my %hash = @{$nl->selectcol_arrayref("GET hosts\nColumns: name contacts", { Columns => [1,2] } )};
+    my %hash = @{
+      $nl->selectcol_arrayref(
+        "GET hosts\nColumns: name contacts",
+        { Columns => [1,2] }
+      )
+    };
 
-    produces a hash with host the contact assosiation
+produces a hash with host the contact assosiation
 
     $VAR1 = {
               'localhost' => 'user1',
@@ -298,11 +379,11 @@ sub selectcol_arrayref {
  selectrow_array($statement)
  selectrow_array($statement, %opts)
 
- Sends a query and returns an array for the first row
+Sends a query and returns an array for the first row
 
     my @array = $nl->selectrow_array("GET hosts");
 
- returns undef if nothing was found
+returns undef if nothing was found
 
 =cut
 sub selectrow_array {
@@ -324,11 +405,11 @@ sub selectrow_array {
  selectrow_arrayref($statement)
  selectrow_arrayref($statement, %opts)
 
- Sends a query and returns an array reference for the first row
+Sends a query and returns an array reference for the first row
 
     my $arrayref = $nl->selectrow_arrayref("GET hosts");
 
- returns undef if nothing was found
+returns undef if nothing was found
 
 =cut
 sub selectrow_arrayref {
@@ -351,11 +432,11 @@ sub selectrow_arrayref {
  selectrow_hashref($statement)
  selectrow_hashref($statement, %opt)
 
- Sends a query and returns a hash reference for the first row
+Sends a query and returns a hash reference for the first row
 
     my $hashref = $nl->selectrow_hashref("GET hosts");
 
- returns undef if nothing was found
+returns undef if nothing was found
 
 =cut
 sub selectrow_hashref {
@@ -378,11 +459,11 @@ sub selectrow_hashref {
 
  select_scalar_value($statement)
 
- Sends a query and returns a single scalar
+Sends a query and returns a single scalar
 
     my $count = $nl->select_scalar_value("GET hosts\nStats: state = 0");
 
- returns undef if nothing was found
+returns undef if nothing was found
 
 =cut
 sub select_scalar_value {
@@ -402,9 +483,8 @@ sub select_scalar_value {
 
  errors_are_fatal($values)
 
- Enable or disable fatal errors. When enabled the module will croak on any error.
-
- returns always undef
+Enable or disable fatal errors. When enabled the module will croak on any error.
+returns always true.
 
 =cut
 sub errors_are_fatal {
@@ -424,9 +504,9 @@ sub errors_are_fatal {
 
  verbose($values)
 
- Enable or disable verbose output. When enabled the module will dump out debug output
+Enable or disable verbose output. When enabled the module will dump out debug output
 
- returns always true
+returns always true.
 
 =cut
 sub verbose {
@@ -437,6 +517,30 @@ sub verbose {
     $self->{'CONNECTOR'}->{'verbose'} = $value;
 
     return 1;
+}
+
+
+########################################
+
+=head2 peer_name
+
+ $nl->peer_name()
+ $nl->peer_name($string)
+
+if new value is set, name is set to this value
+
+always returns the current peer name
+
+=cut
+sub peer_name {
+    my $self  = shift;
+    my $value = shift;
+
+    if(defined $value and $value ne '') {
+        $self->{'name'} = $value;
+    }
+
+    return $self->{'name'};
 }
 
 
@@ -587,6 +691,9 @@ sub _open {
         $self->{'sock'} = $sock;
     }
 
+    # set timeout
+    $sock->timeout($self->{'timeout'});
+
     return($sock);
 }
 
@@ -604,7 +711,7 @@ sub _send_socket {
     my($recv,$header);
 
     my $sock = $self->_open() or return(491, $self->_get_error(491), $!);
-    print $sock $statement;
+    print $sock $statement or return($self->_socket_error($statement, $sock, 'connection failed: '.$!));;
     if($self->{'keepalive'}) {
         print $sock "\n";
     }else {
@@ -617,7 +724,7 @@ sub _send_socket {
         return('201', $self->_get_error(201), undef);
     }
 
-    $sock->read($header, 16) or return($self->_socket_error($statement, $sock, 'reading header from socket failed'));
+    $sock->read($header, 16) or return($self->_socket_error($statement, $sock, 'reading header failed: '.$!));
     print "header: $header" if $self->{'verbose'};
     my($status, $msg, $content_length) = $self->_parse_header($header, $sock);
     return($status, $msg, undef) if !defined $content_length;
@@ -641,9 +748,10 @@ sub _socket_error {
     $message   .= "socket->sockname()  ".Dumper($sock->sockname());
     $message   .= "socket->connected() ".Dumper($sock->connected());
     $message   .= "socket->error()     ".Dumper($sock->error());
+    $message   .= "socket->timeout()   ".Dumper($sock->timeout());
     $message   .= "message             ".Dumper($body);
     if($self->{'errors_are_fatal'}) {
-        confess($message);
+        croak($message);
     } else {
         carp($message);
     }
@@ -686,18 +794,27 @@ possible to set column aliases in various ways.
 
 A valid Columns: Header could look like this:
 
-    my $hosts = $nl->selectall_arrayref("GET hosts\nColumns: state as status");
+ my $hosts = $nl->selectall_arrayref(
+   "GET hosts\nColumns: state as status"
+ );
 
 Stats queries could be aliased too:
 
-    my $stats = $nl->selectall_arrayref("GET hosts\nStats: state = 0 as up");
+ my $stats = $nl->selectall_arrayref(
+   "GET hosts\nStats: state = 0 as up"
+ );
 
 This syntax is available for: Stats, StatsAnd, StatsOr and StatsGroupBy
 
 
-An alternative way to set column aliases is to define rename option key/value pairs:
+An alternative way to set column aliases is to define rename option key/value
+pairs:
 
-    my $hosts = $nl->selectall_arrayref("GET hosts\nColumns: name", { rename => { 'name' => 'hostname' } });
+ my $hosts = $nl->selectall_arrayref(
+   "GET hosts\nColumns: name", {
+     rename => { 'name' => 'hostname' }
+   }
+ );
 
 =cut
 
@@ -776,7 +893,7 @@ sub _extract_keys_from_columns_header {
                     push @header, $column;
                 }
             }
-            $line = 'Columns: '.join(' ', @header);
+            $line =~ s/\s+as\s+([^\s]+)/\ /gmx;
         }
         $new_statement .= $line."\n";
     }
@@ -791,7 +908,9 @@ sub _extract_keys_from_columns_header {
 Errorhandling can be done like this:
 
     use Nagios::MKLivestatus;
-    my $nl = Nagios::MKLivestatus->new( socket => '/var/lib/nagios3/rw/livestatus.sock' );
+    my $nl = Nagios::MKLivestatus->new(
+      socket => '/var/lib/nagios3/rw/livestatus.sock'
+    );
     $nl->errors_are_fatal(0);
     my $hosts = $nl->selectall_arrayref("GET hosts");
     if($Nagios::MKLivestatus::ErrorCode) {
