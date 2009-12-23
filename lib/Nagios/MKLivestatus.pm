@@ -1,12 +1,16 @@
 package Nagios::MKLivestatus;
 
-use 5.000000;
+use 5.006;
 use strict;
 use warnings;
 use Data::Dumper;
 use Carp;
+use Digest::MD5 qw(md5_hex);
+use Nagios::MKLivestatus::INET;
+use Nagios::MKLivestatus::UNIX;
+use Nagios::MKLivestatus::MULTI;
 
-our $VERSION = '0.26';
+our $VERSION = '0.28';
 
 
 =head1 NAME
@@ -34,6 +38,7 @@ installation.
 
 Creates an C<Nagios::MKLivestatus> object. C<new> takes at least the
 socketpath.  Arguments are in key-value pairs.
+See L<EXAMPLES> for more complex variants.
 
 =over 4
 
@@ -83,9 +88,19 @@ enable keepalive. Default is off
 
 errors will die with an error message. Default: on
 
+=item warnings
+
+show warnings
+currently only querys without Columns: Header will result in a warning
+
 =item timeout
 
 set a general timeout. Used for connect and querys, Default 10sec
+
+=item use_threads
+
+only used with multiple backend connections.
+Default is to use threads where available.
 
 =back
 
@@ -112,9 +127,11 @@ sub new {
       "keepalive"                 => 0,       # enable keepalive?
       "errors_are_fatal"          => 1,       # die on errors
       "backend"                   => undef,   # should be keept undef, used internally
-      "timeout"                   => 10,
+      "timeout"                   => 10,      # timeout for tcp connections
+      "use_threads"               => undef,   # use threads, default is to use threads where available
+      "warnings"                  => 1,       # show warnings, for example on querys without Column: Header
+      "logger"                    => undef,   # logger object used for statistical informations and errors / warnings
     };
-    bless $self, $class;
 
     for my $opt_key (keys %options) {
         if(exists $self->{$opt_key}) {
@@ -125,40 +142,43 @@ sub new {
         }
     }
 
-    # check if the supplied peer is a socket or a server address
-    if(defined $self->{'peer'}) {
-        if(index($self->{'peer'}, ':') > 0) {
-            $self->{'server'} = $self->{'peer'};
-        } else {
-            $self->{'socket'} = $self->{'peer'};
-        }
-    }
+    bless $self, $class;
 
-    if(defined $self->{'socket'} and defined $self->{'server'}) {
-        croak('dont use socket and server at once');
-    }
+    # set our peer(s) from the options
+    my $peers = $self->_get_peers();
 
-    # check if we got a peer
-    if(!defined $self->{'socket'} and !defined $self->{'server'}) {
-        croak('please specify either socket or a server');
+    if(!defined $peers) {
+        croak('please specify at least one peer, socket or server');
     }
 
     if(!defined $self->{'backend'}) {
-
-        if(defined $self->{'socket'}) {
-            use Nagios::MKLivestatus::UNIX;
-            $self->{'CONNECTOR'} = new Nagios::MKLivestatus::UNIX(%options);
+        if(scalar @{$peers} == 1) {
+            my $peer = $peers->[0];
+            $options{'name'} = $peer->{'name'};
+            $options{'peer'} = $peer->{'peer'};
+            if($peer->{'type'} eq 'UNIX') {
+                $self->{'CONNECTOR'} = new Nagios::MKLivestatus::UNIX(%options);
+            }
+            elsif($peer->{'type'} eq 'INET') {
+                $self->{'CONNECTOR'} = new Nagios::MKLivestatus::INET(%options);
+            }
+            $self->{'peer'} = $peer->{'peer'};
         }
-        elsif(defined $self->{'server'}) {
-            use Nagios::MKLivestatus::INET;
-            $self->{'CONNECTOR'} = new Nagios::MKLivestatus::INET(%options);
+        else {
+            $options{'peer'} = $peers;
+            return new Nagios::MKLivestatus::MULTI(%options);
         }
     }
 
-    if(!defined $self->{'name'}) {
-        $self->{'name'} = $self->{'server'} if defined $self->{'server'};
-        $self->{'name'} = $self->{'socket'} if defined $self->{'socket'};
+    # set names and peer for non multi backends
+    if(defined $self->{'CONNECTOR'}->{'name'} and !defined $self->{'name'}) {
+        $self->{'name'} = $self->{'CONNECTOR'}->{'name'};
     }
+    if(defined $self->{'CONNECTOR'}->{'peer'} and !defined $self->{'peer'}) {
+        $self->{'peer'} = $self->{'CONNECTOR'}->{'peer'};
+    }
+
+    $self->{'logger'}->debug('initialized Nagios::MKLivestatus ('.$self->peer_name.')') if defined $self->{'logger'};
 
     return $self;
 }
@@ -171,6 +191,7 @@ sub new {
 =head2 do
 
  do($statement)
+ do($statement, %opts)
 
 Send a single statement without fetching the result.
 Always returns true.
@@ -228,12 +249,29 @@ sub selectall_arrayref {
     my $self      = shift;
     my $statement = shift;
     my $opt       = shift;
-    my $limit     = shift;
+    my $limit     = shift || 0;
+    my $result;
 
     # make opt hash keys lowercase
     %{$opt} = map { lc $_ => $opt->{$_} } keys %{$opt};
 
-    my $result = $self->_send($statement);
+    if(defined $self->{'logger'}) {
+        my $d = Data::Dumper->new([$opt]);
+        $d->Indent(0);
+        my $optstring = $d->Dump;
+        $optstring =~ s/^\$VAR1\s+=\s+//mx;
+        $optstring =~ s/;$//mx;
+        my $cleanstatement = $statement;
+        $cleanstatement =~ s/\n/\\n/gmx;
+        $self->{'logger'}->debug('selectall_arrayref("'.$cleanstatement.'", '.$optstring.', '.$limit.')')
+    }
+
+    if(defined $opt->{'addpeer'} and $opt->{'addpeer'}) {
+        $result = $self->_send($statement, 1);
+    } else {
+        $result = $self->_send($statement);
+    }
+
     if(!defined $result) {
         return unless $self->{'errors_are_fatal'};
         croak("got undef result for: $statement");
@@ -246,7 +284,7 @@ sub selectall_arrayref {
         }
     }
 
-    if(defined $opt and ref $opt eq 'HASH' and exists $opt->{'slice'}) {
+    if($opt->{'slice'}) {
         # make an array of hashes
         my @hash_refs;
         for my $res (@{$result->{'result'}}) {
@@ -286,7 +324,7 @@ sub selectall_hashref {
     my $key_field = shift;
     my $opt       = shift;
 
-    $opt->{'Slice'} = {} unless defined $opt->{'Slice'};
+    $opt->{'Slice'} = 1 unless defined $opt->{'Slice'};
 
     croak("key is required for selectall_hashref") if !defined $key_field;
 
@@ -294,11 +332,15 @@ sub selectall_hashref {
 
     my %indexed;
     for my $row (@{$result}) {
-        if(!defined $row->{$key_field}) {
+        if($key_field eq '$peername') {
+            $indexed{$self->peer_name} = $row;
+        }
+        elsif(!defined $row->{$key_field}) {
             my %possible_keys = keys %{$row};
             croak("key $key_field not found in result set, possible keys are: ".join(', ', sort keys %possible_keys));
+        } else {
+            $indexed{$row->{$key_field}} = $row;
         }
-        $indexed{$row->{$key_field}} = $row;
     }
     return(\%indexed);
 }
@@ -444,7 +486,7 @@ sub selectrow_hashref {
     my $statement = shift;
     my $opt       = shift;
 
-    $opt->{'Slice'} = {} unless defined $opt->{'Slice'};
+    $opt->{'Slice'} = 1 unless defined $opt->{'Slice'};
 
     my $result = $self->selectall_arrayref($statement, $opt, 1);
     return if !defined $result;
@@ -458,6 +500,7 @@ sub selectrow_hashref {
 =head2 select_scalar_value
 
  select_scalar_value($statement)
+ select_scalar_value($statement, %opt)
 
 Sends a query and returns a single scalar
 
@@ -481,42 +524,89 @@ sub select_scalar_value {
 
 =head2 errors_are_fatal
 
- errors_are_fatal($values)
+ errors_are_fatal()
+ errors_are_fatal($value)
 
 Enable or disable fatal errors. When enabled the module will croak on any error.
-returns always true.
+
+returns the current setting if called without new value
 
 =cut
 sub errors_are_fatal {
     my $self  = shift;
     my $value = shift;
+    my $old   = $self->{'errors_are_fatal'};
 
     $self->{'errors_are_fatal'}                = $value;
-    $self->{'CONNECTOR'}->{'errors_are_fatal'} = $value;
+    $self->{'CONNECTOR'}->{'errors_are_fatal'} = $value if defined $self->{'CONNECTOR'};
 
-    return 1;
+    return $old;
 }
+
+########################################
+
+=head2 warnings
+
+ warnings()
+ warnings($value)
+
+Enable or disable warnings. When enabled the module will carp on warnings.
+
+returns the current setting if called without new value
+
+=cut
+sub warnings {
+    my $self  = shift;
+    my $value = shift;
+    my $old   = $self->{'warnings'};
+
+    $self->{'warnings'}                = $value;
+    $self->{'CONNECTOR'}->{'warnings'} = $value if defined $self->{'CONNECTOR'};
+
+    return $old;
+}
+
 
 
 ########################################
 
 =head2 verbose
 
+ verbose()
  verbose($values)
 
 Enable or disable verbose output. When enabled the module will dump out debug output
 
-returns always true.
+returns the current setting if called without new value
 
 =cut
 sub verbose {
     my $self  = shift;
     my $value = shift;
+    my $old   = $self->{'verbose'};
 
     $self->{'verbose'}                = $value;
-    $self->{'CONNECTOR'}->{'verbose'} = $value;
+    $self->{'CONNECTOR'}->{'verbose'} = $value if defined $self->{'CONNECTOR'};
 
-    return 1;
+    return $old;
+}
+
+
+########################################
+
+=head2 peer_addr
+
+ $nl->peer_addr()
+
+returns the current peer address
+
+when using multiple backends, a list of all addresses is returned in list context
+
+=cut
+sub peer_addr {
+    my $self  = shift;
+
+    return "".$self->{'peer'};
 }
 
 
@@ -531,6 +621,8 @@ if new value is set, name is set to this value
 
 always returns the current peer name
 
+when using multiple backends, a list of all names is returned in list context
+
 =cut
 sub peer_name {
     my $self  = shift;
@@ -540,18 +632,54 @@ sub peer_name {
         $self->{'name'} = $value;
     }
 
-    return $self->{'name'};
+    return "".$self->{'name'};
 }
 
+
+########################################
+
+=head2 peer_key
+
+ $nl->peer_key()
+
+returns a uniq key for this peer
+
+when using multiple backends, a list of all keys is returned in list context
+
+=cut
+sub peer_key {
+    my $self  = shift;
+
+    if(!defined $self->{'key'}) { $self->{'key'} = md5_hex($self->peer_addr." ".$self->peer_name); }
+
+    return $self->{'key'};
+}
+
+
+########################################
+
+=head2 marked_bad
+
+ $nl->marked_bad()
+
+returns true if the current connection is marked down
+
+=cut
+sub marked_bad {
+    my $self  = shift;
+
+    return 0;
+}
 
 
 ########################################
 # INTERNAL SUBS
 ########################################
 sub _send {
-    my $self      = shift;
-    my $statement = shift;
-    my $header    = "";
+    my $self       = shift;
+    my $statement  = shift;
+    my $with_peers = shift;
+    my $header     = "";
     my $keys;
 
     $Nagios::MKLivestatus::ErrorCode = 0;
@@ -645,10 +773,9 @@ sub _send {
         } else {
             $Nagios::MKLivestatus::ErrorMessage = $msg;
         }
+        $self->{'logger'}->error($status." - ".$Nagios::MKLivestatus::ErrorMessage." in query:\n'".$statement) if defined $self->{'logger'};
         if($self->{'errors_are_fatal'}) {
-            my $nicestatement = $statement;
-            $nicestatement    =~ s/\n/\\n/gmx;
-            croak("ERROR ".$status." - ".$Nagios::MKLivestatus::ErrorMessage." in query:\n'".$nicestatement."'\n");
+            croak("ERROR ".$status." - ".$Nagios::MKLivestatus::ErrorMessage." in query:\n'".$statement."'\n");
         }
         return;
     }
@@ -659,16 +786,43 @@ sub _send {
     my $line_seperator = chr($self->{'line_seperator'});
     my $col_seperator  = chr($self->{'column_seperator'});
 
+    my $peer_name = $self->peer_name;
+    my $peer_addr = $self->peer_addr;
+    my $peer_key  = $self->peer_key;
+
     my @result;
     ## no critic
     for my $line (split/$line_seperator/m, $body) {
-        push @result, [ split/$col_seperator/m, $line ];
+        my $row = [ split/$col_seperator/m, $line ];
+        if(defined $with_peers and $with_peers == 1) {
+            unshift @{$row}, $peer_name;
+            unshift @{$row}, $peer_addr;
+            unshift @{$row}, $peer_key;
+        }
+        push @result, $row;
     }
     ## use critic
 
     # for querys with column header, no seperate columns will be returned
     if(!defined $keys) {
+        $self->{'logger'}->warn("got statement without Columns: header!") if defined $self->{'logger'};
+        if($self->{'warnings'}) {
+            carp("got statement without Columns: header! -> ".$statement);
+        }
         $keys = shift @result;
+
+        # remove first element of keys, because its the peer_name
+        if(defined $with_peers and $with_peers == 1) {
+            shift @{$keys};
+            shift @{$keys};
+            shift @{$keys};
+        }
+    }
+
+    if(defined $with_peers and $with_peers == 1) {
+        unshift @{$keys}, 'peer_name';
+        unshift @{$keys}, 'peer_addr';
+        unshift @{$keys}, 'peer_key';
     }
 
     return({ keys => $keys, result => \@result});
@@ -680,7 +834,7 @@ sub _open {
     my $statement = shift;
 
     # return the current socket in keep alive mode
-    if($self->{'keepalive'} and defined $self->{'sock'} and $self->{'sock'}->connected()) {
+    if($self->{'keepalive'} and defined $self->{'sock'} and $self->{'sock'}->atmark()) {
         return($self->{'sock'});
     }
 
@@ -692,7 +846,7 @@ sub _open {
     }
 
     # set timeout
-    $sock->timeout($self->{'timeout'});
+    $sock->timeout($self->{'timeout'}) if defined $sock;
 
     return($sock);
 }
@@ -703,6 +857,66 @@ sub _close {
     my $sock  = shift;
     return($self->{'CONNECTOR'}->_close($sock));
 }
+
+
+########################################
+
+=head1 QUERY OPTIONS
+
+In addition to the normal query syntax from the livestatus addon, it is
+possible to set column aliases in various ways.
+
+=head2 AddPeer
+
+adds the peers name, addr and key to the result set:
+
+ my $hosts = $nl->selectall_hashref(
+   "GET hosts\nColumns: name alias state",
+   "name",
+   { AddPeer => 1 }
+ );
+
+=head2 Backend
+
+send the query only to some specific backends. Only
+useful when using multiple backends.
+
+ my $hosts = $nl->selectall_arrayref(
+   "GET hosts\nColumns: name alias state",
+   { Backends => [ 'key1', 'key4' ] }
+ );
+
+=head2 Columns
+
+    only return the given column indexes
+
+    my $array_ref = $nl->selectcol_arrayref(
+       "GET hosts\nColumns: name contacts",
+       { Columns => [2] }
+    );
+
+  see L<selectcol_arrayref> for more examples
+
+=head2 Rename
+
+  see L<COLUMN ALIAS> for detailed explainaton
+
+=head2 Slice
+
+  see L<selectall_arrayref> for detailed explainaton
+
+=head2 Sum
+
+The Sum option only applies when using multiple backends.
+The values from all backends with be summed up to a total.
+
+ my $stats = $nl->selectrow_hashref(
+   "GET hosts\nStats: state = 0\nStats: state = 1",
+   { Sum => 1 }
+ );
+
+=cut
+
 
 ########################################
 sub _send_socket {
@@ -744,12 +958,16 @@ sub _socket_error {
     my $body      = shift;
 
     my $message = "\n";
+    $message   .= "peer                ".Dumper($self->peer_name);
     $message   .= "statement           ".Dumper($statement);
     $message   .= "socket->sockname()  ".Dumper($sock->sockname());
-    $message   .= "socket->connected() ".Dumper($sock->connected());
+    $message   .= "socket->atmark()    ".Dumper($sock->atmark());
     $message   .= "socket->error()     ".Dumper($sock->error());
     $message   .= "socket->timeout()   ".Dumper($sock->timeout());
     $message   .= "message             ".Dumper($body);
+
+    $self->{'logger'}->error($message) if defined $self->{'logger'};
+
     if($self->{'errors_are_fatal'}) {
         croak($message);
     } else {
@@ -770,7 +988,7 @@ sub _parse_header {
 
     my $headerlength = length($header);
     if($headerlength != 16) {
-        return(498, $self->_get_error(498), undef);
+        return(498, $self->_get_error(498)."\ngot: ".$header.<$sock>, undef);
     }
     chomp($header);
 
@@ -948,7 +1166,111 @@ sub _get_error {
     return($codes->{$code});
 }
 
+########################################
+sub _get_peers {
+    my $self   = shift;
+
+    # set options for our peer(s)
+    my %options;
+    for my $opt_key (keys %{$self}) {
+        $options{$opt_key} = $self->{$opt_key};
+    }
+
+    my $peers = [];
+
+    # check if the supplied peer is a socket or a server address
+    if(defined $self->{'peer'}) {
+        if(ref $self->{'peer'} eq '') {
+            my $name = $self->{'name'} || "".$self->{'peer'};
+            if(index($self->{'peer'}, ':') > 0) {
+                push @{$peers}, { 'peer' => "".$self->{'peer'}, type => 'INET', name => $name };
+            } else {
+                push @{$peers}, { 'peer' => "".$self->{'peer'}, type => 'UNIX', name => $name };
+            }
+        }
+        elsif(ref $self->{'peer'} eq 'ARRAY') {
+            for my $peer (@{$self->{'peer'}}) {
+                if(ref $peer eq 'HASH') {
+                    next if !defined $peer->{'peer'};
+                    $peer->{'name'} = "".$peer->{'peer'} unless defined $peer->{'name'};
+                    if(!defined $peer->{'type'}) {
+                        $peer->{'type'} = 'UNIX';
+                        if(index($peer->{'peer'}, ':') >= 0) {
+                            $peer->{'type'} = 'INET';
+                        }
+                    }
+                    push @{$peers}, $peer;
+                } else {
+                    my $type = 'UNIX';
+                    if(index($peer, ':') >= 0) {
+                        $type = 'INET';
+                    }
+                    push @{$peers}, { 'peer' => "".$peer, type => $type, name => "".$peer };
+                }
+            }
+        }
+        elsif(ref $self->{'peer'} eq 'HASH') {
+            for my $peer (keys %{$self->{'peer'}}) {
+                my $name = $self->{'peer'}->{$peer};
+                my $type = 'UNIX';
+                if(index($peer, ':') >= 0) {
+                    $type = 'INET';
+                }
+                push @{$peers}, { 'peer' => "".$peer, type => $type, name => "".$name };
+            }
+        } else {
+            confess("type ".(ref $self->{'peer'})." is not supported for peer option");
+        }
+    }
+    if(defined $self->{'socket'}) {
+        my $name = $self->{'name'} || "".$self->{'socket'};
+        push @{$peers}, { 'peer' => "".$self->{'socket'}, type => 'UNIX', name => $name };
+    }
+    if(defined $self->{'server'}) {
+        my $name = $self->{'name'} || "".$self->{'server'};
+        push @{$peers}, { 'peer' => "".$self->{'server'}, type => 'INET', name => $name };
+    }
+
+    # check if we got a peer
+    if(scalar @{$peers} == 0) {
+        croak('please specify at least one peer, socket or server');
+    }
+
+    # clean up
+    delete $options{'peer'};
+    delete $options{'socket'};
+    delete $options{'server'};
+
+    return $peers;
+}
+
 1;
+
+=head1 EXAMPLES
+
+=head2 Multibackend Configuration
+
+    use Nagios::MKLivestatus;
+    my $nl = Nagios::MKLivestatus->new(
+      name       => 'multiple connector',
+      verbose   => 0,
+      keepalive => 1,
+      peer      => [
+            {
+                name => 'DMZ Nagios',
+                peer => '50.50.50.50:9999',
+            },
+            {
+                name => 'Local Nagios',
+                peer => '/tmp/livestatus.socket',
+            },
+            {
+                name => 'Special Nagios',
+                peer => '100.100.100.100:9999',
+            }
+      ],
+    );
+    my $hosts = $nl->selectall_arrayref("GET hosts");
 
 =head1 SEE ALSO
 
