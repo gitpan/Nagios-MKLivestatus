@@ -144,7 +144,7 @@ my $expected_keys = {
                        ],
     'log'           => [
                          '__all_from_hosts__','__all_from_services__','__all_from_contacts__','__all_from_commands__',
-                         'attempt','class','command_name','comment','contact_name','host_name','message','plugin_output',
+                         'attempt','class','command_name','comment','contact_name','host_name','line','message','options','plugin_output',
                          'service_description','state','state_type','time'
                        ],
     'servicegroups' => [
@@ -191,10 +191,10 @@ for my $key (sort keys %{$objects_to_test}) {
 
     #########################
     # set downtime for a host and service
-    my $firsthost = $nl->select_scalar_value("GET hosts\nColumns: name\nLimit: 1");
+    my $firsthost = $nl->selectscalar_value("GET hosts\nColumns: name\nLimit: 1");
     isnt($firsthost, undef, 'get test hostname') or BAIL_OUT($key.': got not test hostname');
     $nl->do('COMMAND ['.time().'] SCHEDULE_HOST_DOWNTIME;'.$firsthost.';'.time().';'.(time()+60).';1;0;60;nagiosadmin;test');
-    my $firstservice = $nl->select_scalar_value("GET services\nColumns: description\nFilter: host_name = $firsthost\nLimit: 1");
+    my $firstservice = $nl->selectscalar_value("GET services\nColumns: description\nFilter: host_name = $firsthost\nLimit: 1");
     isnt($firstservice, undef, 'get test servicename') or BAIL_OUT('got not test servicename');
     $nl->do('COMMAND ['.time().'] SCHEDULE_SERVICE_DOWNTIME;'.$firsthost.';'.$firstservice.';'.time().';'.(time()+60).';1;0;60;nagiosadmin;test');
     # sometimes it takes while till the downtime is accepted
